@@ -1,21 +1,11 @@
 
 import { GoogleGenAI } from "@google/genai";
 
-// Ensure the API key is available in the environment variables
-const API_KEY = process.env.API_KEY;
-if (!API_KEY) {
-  // In a real app, you'd handle this more gracefully.
-  // For this example, we'll log an error.
-  console.error("Gemini API key not found. Please set the API_KEY environment variable.");
-}
-
-const ai = new GoogleGenAI({ apiKey: API_KEY! });
+// The API key is sourced from the environment variable `process.env.API_KEY`.
+// It is assumed to be pre-configured and available in the execution environment.
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
 
 export const generateSuccessStory = async (projectName: string, topic: string): Promise<string> => {
-  if (!API_KEY) {
-    return "Error: Gemini API key is not configured. Story generation is disabled.";
-  }
-
   const model = "gemini-2.5-flash";
 
   const prompt = `
