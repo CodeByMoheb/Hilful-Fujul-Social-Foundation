@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { surahs } from '../data/surahs';
 import type { Surah, Ayah } from '../types';
@@ -42,9 +41,15 @@ const Quran: React.FC = () => {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [audioLoadingAyah, setAudioLoadingAyah] = useState<number | null>(null);
+    const [isListeningToAll, setIsListeningToAll] = useState(false);
 
     const audioContextRef = useRef<AudioContext | null>(null);
     const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+    const listenToAllRef = useRef(false);
+
+    useEffect(() => {
+        listenToAllRef.current = isListeningToAll;
+    }, [isListeningToAll]);
 
     useEffect(() => {
         // Initialize AudioContext. The sample rate matches the Gemini TTS output.
@@ -97,7 +102,12 @@ const Quran: React.FC = () => {
         }
     }, [selectedSurah]);
 
-    const playAudio = async (arabicText: string, verseNumber: number) => {
+    const playAudio = async (arabicText: string, verseNumber: number, isFromSequence: boolean = false) => {
+        if (!isFromSequence) {
+            // If a user clicks a specific Ayah, always stop any "Listen All" sequence.
+            setIsListeningToAll(false);
+        }
+
         if (audioSourceRef.current) {
             audioSourceRef.current.stop();
         }
@@ -126,17 +136,53 @@ const Quran: React.FC = () => {
                 if (audioSourceRef.current === source) {
                     audioSourceRef.current = null;
                 }
+
+                if (listenToAllRef.current) {
+                    const currentAyahIndex = ayahs.findIndex(a => a.verse === verseNumber);
+                    if (currentAyahIndex !== -1 && currentAyahIndex < ayahs.length - 1) {
+                        const nextAyah = ayahs[currentAyahIndex + 1];
+                        playAudio(nextAyah.arabic, nextAyah.verse, true);
+                    } else {
+                        setIsListeningToAll(false);
+                    }
+                }
             };
 
         } catch (err) {
             console.error('Failed to play audio:', err);
             setError('Could not play audio. See console for details.');
             setAudioLoadingAyah(null);
+            setIsListeningToAll(false);
+        }
+    };
+
+    const stopAllPlayback = () => {
+        setIsListeningToAll(false);
+        if (audioSourceRef.current) {
+            audioSourceRef.current.stop();
+        } else {
+            setAudioLoadingAyah(null);
+        }
+    };
+
+    const togglePlayAll = () => {
+        if (isListeningToAll) {
+            stopAllPlayback();
+        } else {
+            if (ayahs.length > 0) {
+                setIsListeningToAll(true);
+                playAudio(ayahs[0].arabic, ayahs[0].verse, true);
+            }
         }
     };
     
     // Renders the detailed view for a selected Surah
     if (selectedSurah) {
+        let playAllButtonText = 'Listen to Full Surah';
+        if (isListeningToAll) {
+            playAllButtonText = audioLoadingAyah !== null ? 'Loading...' : 'Stop Listening';
+        }
+
         return (
             <div className="bg-brand-light-bg min-h-screen">
                 <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-12">
@@ -149,6 +195,15 @@ const Quran: React.FC = () => {
                             <h2 className="text-2xl lg:text-3xl font-serif text-brand-primary">{selectedSurah.englishName}</h2>
                             <p className="text-lg text-brand-text-muted">{selectedSurah.englishNameTranslation}</p>
                             <p className="text-sm text-brand-text-muted mt-1">{selectedSurah.revelationType} &bull; {selectedSurah.numberOfAyahs} Ayahs</p>
+                            <div className="mt-6">
+                                <button
+                                    onClick={togglePlayAll}
+                                    disabled={isLoading || (isListeningToAll && audioLoadingAyah !== null)}
+                                    className="bg-brand-primary text-white font-bold py-3 px-8 rounded-lg shadow-sm hover:bg-green-800 transition-colors disabled:bg-brand-text-muted disabled:cursor-not-allowed"
+                                >
+                                    {playAllButtonText}
+                                </button>
+                            </div>
                         </div>
 
                         {isLoading && <div className="text-center p-8 text-brand-text-muted">Loading Ayahs...</div>}
@@ -162,9 +217,9 @@ const Quran: React.FC = () => {
                                             <span className="text-lg font-bold text-brand-primary">{selectedSurah.number}:{ayah.verse}</span>
                                             <button onClick={() => playAudio(ayah.arabic, ayah.verse)} disabled={audioLoadingAyah === ayah.verse} className="p-2 rounded-full hover:bg-brand-secondary disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                                                 {audioLoadingAyah === ayah.verse ? (
-                                                    <svg className="animate-spin h-6 w-6 text-brand-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                                    <svg className="animate-spin h-6 w-6 text-brand-primary" xmlns="http://www.w.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                                                 ) : (
-                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-brand-primary" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>
+                                                    <svg xmlns="http://www.w.org/2000/svg" className="h-6 w-6 text-brand-primary" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>
                                                 )}
                                             </button>
                                         </div>
