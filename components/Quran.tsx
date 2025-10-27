@@ -1,11 +1,33 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { surahs } from '../data/surahs';
 import type { Surah, Ayah } from '../types';
 import { getAyahAudio } from '../services/geminiService';
 
-// --- Audio Decoding Helpers ---
+// Helper icon components
+const PlayIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+);
 
-function decodeBase64(base64: string) {
+const LoadingSpinner = () => (
+    <svg className="animate-spin h-6 w-6 text-brand-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+);
+
+const BackIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" />
+    </svg>
+);
+
+
+// Audio decoding functions from Gemini guidelines
+function decode(base64: string): Uint8Array {
   const binaryString = atob(base64);
   const len = binaryString.length;
   const bytes = new Uint8Array(len);
@@ -15,18 +37,22 @@ function decodeBase64(base64: string) {
   return bytes;
 }
 
-async function decodePcmAudioData(
+async function decodeAudioData(
   data: Uint8Array,
   ctx: AudioContext,
 ): Promise<AudioBuffer> {
-  const sampleRate = 24000; // Gemini TTS default sample rate
+  // Gemini TTS provides raw PCM data at 24000Hz, mono.
+  const sampleRate = 24000;
   const numChannels = 1;
   const dataInt16 = new Int16Array(data.buffer);
   const frameCount = dataInt16.length / numChannels;
   const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-  const channelData = buffer.getChannelData(0);
-  for (let i = 0; i < frameCount; i++) {
-    channelData[i] = dataInt16[i] / 32768.0;
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
   }
   return buffer;
 }
@@ -38,247 +64,171 @@ const Quran: React.FC = () => {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
+    const [playingAyah, setPlayingAyah] = useState<{verse: number, audio: AudioBufferSourceNode | null} | null>(null);
+    const [loadingAudioVerse, setLoadingAudioVerse] = useState<number | null>(null);
 
-    // --- Audio State ---
-    const [playingVerse, setPlayingVerse] = useState<number | null>(null);
-    const [loadingVerse, setLoadingVerse] = useState<number | null>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
-    const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
-    
-    // --- Effects for fetching and cleanup ---
 
     useEffect(() => {
-        // Initialize AudioContext on first interaction
-        if (!audioContextRef.current) {
-            // FIX: Cast window to `any` to allow access to vendor-prefixed `webkitAudioContext` for older browser compatibility.
-            audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-        }
+        if (!selectedSurah) return;
 
-        // Cleanup audio when component unmounts
-        return () => {
-            if (audioSourceRef.current) {
-                audioSourceRef.current.stop();
-            }
-            if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-                audioContextRef.current.close();
+        const fetchAyahs = async () => {
+            setIsLoading(true);
+            setError(null);
+            try {
+                // Using a public Quran API to get Arabic text and Bengali translation
+                const response = await fetch(`https://api.alquran.cloud/v1/surah/${selectedSurah.number}/editions/quran-uthmani,bn.bengali`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                
+                const arabicAyahs = data.data[0].ayahs;
+                const banglaAyahs = data.data[1].ayahs;
+
+                const combinedAyahs: Ayah[] = arabicAyahs.map((ayah: any, index: number) => ({
+                    verse: ayah.numberInSurah,
+                    arabic: ayah.text,
+                    bangla: banglaAyahs[index].text,
+                }));
+
+                setAyahs(combinedAyahs);
+            } catch (e) {
+                console.error("Failed to fetch ayahs:", e);
+                setError('Failed to load Surah. Please try again later.');
+            } finally {
+                setIsLoading(false);
             }
         };
-    }, []);
 
-    useEffect(() => {
-        if (selectedSurah) {
-            const fetchAyahs = async () => {
-                setIsLoading(true);
-                setError(null);
-                setAyahs([]);
-                try {
-                    const response = await fetch(`https://api.alquran.cloud/v1/surah/${selectedSurah.number}/editions/quran-uthmani,bn.bengali`);
-                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                    
-                    const data = await response.json();
-                    if (data.code !== 200 || !data.data || data.data.length < 2) throw new Error('Invalid API response format.');
-                    
-                    const arabicAyahs = data.data[0].ayahs;
-                    const banglaAyahs = data.data[1].ayahs;
-
-                    const formattedAyahs: Ayah[] = arabicAyahs.map((ayah: any, index: number) => ({
-                        verse: ayah.numberInSurah,
-                        arabic: ayah.text,
-                        bangla: banglaAyahs[index].text,
-                    }));
-
-                    setAyahs(formattedAyahs);
-
-                } catch (e) {
-                    console.error("Failed to fetch ayahs:", e);
-                    setError("Could not load the Surah. Please try again later.");
-                } finally {
-                    setIsLoading(false);
-                }
-            };
-            fetchAyahs();
-        }
-         // Stop any playing audio when the surah changes
-        if (audioSourceRef.current) {
-            audioSourceRef.current.stop();
-            setPlayingVerse(null);
-        }
-
+        fetchAyahs();
     }, [selectedSurah]);
 
     const handlePlayAudio = async (ayah: Ayah) => {
-        // Stop currently playing audio if any
-        if (audioSourceRef.current) {
-            audioSourceRef.current.stop();
-            audioSourceRef.current = null;
-            // If the same verse was clicked, just stop it.
-            if (playingVerse === ayah.verse) {
-                setPlayingVerse(null);
-                return;
-            }
+        if (playingAyah?.verse === ayah.verse) {
+             playingAyah.audio?.stop();
+             setPlayingAyah(null);
+             return;
         }
 
-        if (!audioContextRef.current) return;
-        if (audioContextRef.current.state === 'suspended') {
-            audioContextRef.current.resume();
+        if (playingAyah?.audio) {
+            playingAyah.audio.stop();
         }
-        
-        setPlayingVerse(null);
-        setLoadingVerse(ayah.verse);
+
+        setLoadingAudioVerse(ayah.verse);
+        setPlayingAyah(null);
 
         try {
             const base64Audio = await getAyahAudio(ayah.arabic);
-            const audioBytes = decodeBase64(base64Audio);
-            const audioBuffer = await decodePcmAudioData(audioBytes, audioContextRef.current);
             
-            const source = audioContextRef.current.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(audioContextRef.current.destination);
-            source.start();
-            
-            source.onended = () => {
-                setPlayingVerse(null);
-                audioSourceRef.current = null;
-            };
+            if (!audioContextRef.current) {
+                audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+            }
+            const audioCtx = audioContextRef.current;
+            const decodedBytes = decode(base64Audio);
+            const audioBuffer = await decodeAudioData(decodedBytes, audioCtx);
 
-            audioSourceRef.current = source;
-            setPlayingVerse(ayah.verse);
+            const source = audioCtx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioCtx.destination);
+            source.start();
+            source.onended = () => {
+                setPlayingAyah(null);
+            };
+            setPlayingAyah({ verse: ayah.verse, audio: source });
 
         } catch (err) {
             console.error("Failed to play audio:", err);
-            alert("Sorry, could not play the recitation for this verse.");
+            alert("Could not play audio. Please check console for details.");
         } finally {
-            setLoadingVerse(null);
+            setLoadingAudioVerse(null);
         }
     };
 
-    const filteredSurahs = useMemo(() => {
-        return surahs.filter(surah => 
+    const filteredSurahs = useMemo(() =>
+        surahs.filter(surah =>
             surah.englishName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            surah.englishNameTranslation.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            surah.name.includes(searchTerm) ||
-            String(surah.number).includes(searchTerm)
-        );
-    }, [searchTerm]);
+            surah.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            surah.number.toString().includes(searchTerm)
+        ), [searchTerm]);
 
-    // --- UI Components ---
-
-    const SurahListItem: React.FC<{ surah: Surah }> = ({ surah }) => (
-        <li 
-            className="border-b border-brand-border-light last:border-b-0"
-            onClick={() => setSelectedSurah(surah)}
-        >
-            <div className={`flex items-center justify-between p-4 hover:bg-brand-secondary cursor-pointer transition-colors duration-200 ${selectedSurah?.number === surah.number ? 'bg-brand-secondary' : ''}`}>
-                <div className="flex items-center space-x-4">
-                    <div className="w-10 h-10 flex items-center justify-center bg-brand-light-bg rounded-md text-brand-primary font-bold">
-                        {surah.number}
-                    </div>
-                    <div>
-                        <p className="font-semibold text-brand-text-dark">{surah.englishName}</p>
-                        <p className="text-sm text-brand-text-muted">{surah.englishNameTranslation}</p>
-                    </div>
-                </div>
-                <div className="text-right">
-                    <p className="font-serif text-lg text-brand-text-dark">{surah.name}</p>
-                    <p className="text-xs text-brand-text-muted">{surah.revelationType} - {surah.numberOfAyahs} Ayahs</p>
-                </div>
-            </div>
-        </li>
-    );
-
-    const AyahView: React.FC = () => (
-        <div className="bg-white p-6 rounded-lg shadow-inner border border-brand-border-light">
-             <div className="border-b border-brand-border-light pb-4 mb-4">
-                <div className="flex justify-between items-center">
-                    <div>
-                        <h2 className="text-3xl font-serif text-brand-primary">{selectedSurah?.englishName}</h2>
-                        <p className="text-brand-text-muted">{selectedSurah?.englishNameTranslation}</p>
-                    </div>
-                    <h2 className="text-4xl font-serif text-brand-text-dark">{selectedSurah?.name}</h2>
-                </div>
-                {selectedSurah?.number !== 1 && selectedSurah?.number !== 9 && (
-                     <p className="text-center text-2xl font-serif mt-6 text-brand-text-dark">بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ</p>
-                )}
-            </div>
-            
-            {isLoading && <p className="text-center p-8 text-brand-text-muted">Loading...</p>}
-            {error && <p className="text-center p-8 text-red-500">{error}</p>}
-            
-            <ul className="space-y-6">
-                {ayahs.map((ayah) => (
-                    <li key={ayah.verse} className="border-b border-brand-border-light/50 pb-6 last:border-0">
-                        <div className="flex justify-between items-start">
-                            <button onClick={() => handlePlayAudio(ayah)} className="mt-2 w-10 h-10 flex items-center justify-center rounded-full text-brand-primary hover:bg-brand-secondary transition-colors" aria-label={`Play audio for verse ${ayah.verse}`}>
-                                {loadingVerse === ayah.verse ? (
-                                    <svg className="animate-spin h-5 w-5 text-brand-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                    </svg>
-                                ) : playingVerse === ayah.verse ? (
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1zm4 0a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
-                                    </svg>
-                                ) : (
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
-                                    </svg>
-                                )}
-                            </button>
-                            <p className="flex-1 text-right text-3xl font-serif leading-relaxed text-brand-text-dark mb-3 ml-4">
-                               {ayah.arabic} <span className="text-lg font-sans text-brand-primary">({ayah.verse})</span>
-                            </p>
-                        </div>
-                        <p className="text-lg text-brand-text-muted pl-14">{ayah.bangla}</p>
-                    </li>
-                ))}
-            </ul>
-        </div>
-    );
-    
-    return (
-        <div className="bg-brand-light-bg py-12 min-h-screen">
-            <div className="container mx-auto px-4 sm:px-6 lg:px-8">
+    if (selectedSurah) {
+        return (
+            <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-12 animate-fadeIn">
+                <button
+                    onClick={() => {
+                        setSelectedSurah(null);
+                        setAyahs([]);
+                    }}
+                    className="mb-6 flex items-center text-brand-primary font-semibold hover:underline"
+                >
+                    <BackIcon /> All Surahs
+                </button>
                 <div className="text-center mb-10">
-                    <h1 className="text-5xl font-extrabold tracking-tight font-serif text-brand-text-dark">Al-Quran</h1>
-                    <p className="mt-4 max-w-2xl mx-auto text-xl text-brand-text-muted">
-                        Explore the divine revelations.
-                    </p>
-                    <div className="w-24 h-1 bg-brand-primary mx-auto mt-4"></div>
+                    <h1 className="text-4xl md:text-5xl font-bold font-serif text-brand-text-dark">{selectedSurah.name}</h1>
+                    <h2 className="text-2xl text-brand-text-muted">{selectedSurah.englishName} - "{selectedSurah.englishNameTranslation}"</h2>
+                    <p className="text-brand-text-muted mt-2">{selectedSurah.revelationType} &bull; {selectedSurah.numberOfAyahs} Ayahs</p>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    {/* Surah List */}
-                    <div className="lg:col-span-1">
-                        <div className="sticky top-24">
-                             <input 
-                                type="text"
-                                placeholder="Search Surah by name or number..."
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                                className="w-full px-4 py-3 mb-4 bg-white border border-brand-border-light rounded-md shadow-sm focus:ring-brand-primary focus:border-brand-primary"
-                            />
-                            <div className="bg-white rounded-lg shadow-md border border-brand-border-light max-h-[70vh] overflow-y-auto">
-                                <ul>
-                                    {filteredSurahs.length > 0 ? (
-                                        filteredSurahs.map(surah => <SurahListItem key={surah.number} surah={surah} />)
-                                    ) : (
-                                        <li className="p-4 text-center text-brand-text-muted">No Surahs found.</li>
-                                    )}
-                                </ul>
-                            </div>
+                {isLoading && <div className="text-center p-10"><LoadingSpinner /></div>}
+                {error && <p className="text-center text-red-500">{error}</p>}
+                
+                <div className="space-y-4">
+                    {ayahs.map((ayah) => (
+                        <div key={ayah.verse} className="bg-white p-6 rounded-lg shadow-sm border border-brand-border-light">
+                             <div className="flex justify-between items-center mb-4">
+                                <span className="text-lg font-bold text-brand-primary bg-brand-light-bg px-3 py-1 rounded-md">{selectedSurah.number}:{ayah.verse}</span>
+                                <button onClick={() => handlePlayAudio(ayah)} disabled={loadingAudioVerse === ayah.verse} className="text-brand-primary disabled:text-brand-text-muted">
+                                    {loadingAudioVerse === ayah.verse ? <LoadingSpinner /> : <PlayIcon />}
+                                </button>
+                             </div>
+                            <p className="text-3xl text-right font-quranic leading-relaxed text-brand-text-dark mb-4">{ayah.arabic}</p>
+                            <p className="text-lg text-brand-text-muted">{ayah.bangla}</p>
                         </div>
-                    </div>
+                    ))}
+                </div>
+            </div>
+        );
+    }
 
-                    {/* Ayah Display */}
-                    <div className="lg:col-span-2">
-                        {selectedSurah ? (
-                            <AyahView />
-                        ) : (
-                            <div className="flex items-center justify-center h-full bg-white p-6 rounded-lg shadow-inner border border-brand-border-light text-center">
-                                <p className="text-xl text-brand-text-muted">Select a Surah from the list to read.</p>
+    return (
+        <div className="bg-brand-light-bg py-20">
+            <div className="container mx-auto px-4 sm:px-6 lg:px-8">
+                <div className="text-center animate-fadeInUp">
+                    <h1 className="text-5xl font-extrabold tracking-tight font-serif">আল-কুরআন</h1>
+                     <p className="mt-4 max-w-2xl mx-auto text-xl text-brand-text-muted">
+                        Explore the divine revelations. Select a Surah to begin reading.
+                    </p>
+                    <div className="w-24 h-1 bg-brand-primary mx-auto mt-4 mb-6"></div>
+                </div>
+
+                <div className="my-8 max-w-xl mx-auto">
+                    <input
+                        type="text"
+                        placeholder="Search for a Surah by name or number..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="w-full px-4 py-3 bg-white border border-brand-border-light rounded-md shadow-sm focus:ring-brand-primary focus:border-brand-primary"
+                    />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {filteredSurahs.map(surah => (
+                        <div
+                            key={surah.number}
+                            onClick={() => setSelectedSurah(surah)}
+                            className="bg-white p-6 rounded-lg shadow-sm border border-brand-border-light hover:shadow-lg hover:border-brand-primary transition-all duration-300 cursor-pointer flex items-center justify-between"
+                        >
+                            <div className="flex items-center">
+                                <span className="text-xl font-bold text-brand-primary bg-brand-light-bg w-12 h-12 flex items-center justify-center rounded-md mr-4">{surah.number}</span>
+                                <div>
+                                    <h3 className="text-xl font-bold font-serif text-brand-text-dark">{surah.englishName}</h3>
+                                    <p className="text-sm text-brand-text-muted">{surah.englishNameTranslation}</p>
+                                </div>
                             </div>
-                        )}
-                    </div>
+                            <h2 className="text-2xl font-quranic text-brand-text-dark">{surah.name}</h2>
+                        </div>
+                    ))}
                 </div>
             </div>
         </div>
