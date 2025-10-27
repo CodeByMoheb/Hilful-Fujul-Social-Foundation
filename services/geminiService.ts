@@ -1,38 +1,77 @@
+import { GoogleGenAI, Type } from "@google/genai";
+import type { Ayah } from '../types';
 
-import { GoogleGenAI } from "@google/genai";
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-// The API key is sourced from the environment variable `process.env.API_KEY`.
-// It is assumed to be pre-configured and available in the execution environment.
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
-
-export const generateSuccessStory = async (projectName: string, topic: string): Promise<string> => {
-  const model = "gemini-2.5-flash";
-
-  const prompt = `
-    You are a professional storyteller for a non-profit organization called "Hilful Fuzul Social Foundation". 
-    Your task is to write a short, inspiring, and heartwarming success story for our blog and social media.
-
-    Project Name: ${projectName}
-    Key Topic/Points: ${topic}
-
-    Please write a story of about 150-200 words. It should be emotionally engaging, highlight the positive impact of our work, and encourage readers to support our cause. Use a positive and hopeful tone.
+export async function getSurahDetails(surahName: string): Promise<Ayah[]> {
+    const prompt = `
+      Provide the full text of Surah "${surahName}" from the Quran.
+      I need every single verse (ayah).
+      For each verse, provide the original Arabic text and a simple Bangla translation.
+      Return the result as a JSON array.
     `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-    });
-    
-    // Using the recommended way to get text
-    const text = response.text;
-    if (text) {
-        return text;
-    } else {
-        return "Could not generate a story. The model returned an empty response.";
+    const responseSchema = {
+        type: Type.ARRAY,
+        items: {
+            type: Type.OBJECT,
+            properties: {
+                verse: {
+                    type: Type.INTEGER,
+                    description: 'The verse number.',
+                },
+                arabic: {
+                    type: Type.STRING,
+                    description: 'The original Arabic text of the verse.',
+                },
+                bangla: {
+                    type: Type.STRING,
+                    description: 'The Bangla translation of the verse.',
+                },
+            },
+            required: ['verse', 'arabic', 'bangla'],
+            propertyOrdering: ["verse", "arabic", "bangla"],
+        },
+    };
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: responseSchema,
+            },
+        });
+
+        const jsonText = response.text.trim();
+        const surahData: Ayah[] = JSON.parse(jsonText);
+        return surahData;
+    } catch (error) {
+        console.error("Error fetching Surah details with Gemini API:", error);
+        throw new Error(`Failed to fetch details for Surah ${surahName}.`);
     }
-  } catch (error) {
-    console.error("Error calling Gemini API:", error);
-    return "An error occurred while generating the story. Please try again later.";
-  }
-};
+}
+
+
+export async function generateSuccessStory(projectName: string, topic: string): Promise<string> {
+    const prompt = `
+        Write a short, heartwarming success story for a charity organization's website.
+        The story should be about the "${projectName}" project.
+        Focus on the following key points or topic: "${topic}".
+        Keep the story concise (around 150 words), uplifting, and suitable for a general audience.
+        Do not use markdown formatting. Just return the plain text of the story.
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+        });
+
+        return response.text;
+    } catch (error) {
+        console.error("Error generating success story with Gemini API:", error);
+        return "We're sorry, but we couldn't generate a story at this time. Please try again later.";
+    }
+}
